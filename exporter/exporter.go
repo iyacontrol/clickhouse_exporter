@@ -22,6 +22,7 @@ const (
 // Exporter collects clickhouse stats from the given URI and exports them using
 // the prometheus metrics package.
 type Exporter struct {
+	healthURI       string
 	metricsURI      string
 	asyncMetricsURI string
 	eventsURI       string
@@ -52,8 +53,9 @@ func NewExporter(uri url.URL, insecure bool, user, password string) *Exporter {
 	partsURI := uri
 	q.Set("query", "select database, table, sum(bytes) as bytes, count() as parts, sum(rows) as rows from system.parts where active = 1 group by database, table")
 	partsURI.RawQuery = q.Encode()
-	
+
 	return &Exporter{
+		healthURI:       uri.String(),
 		metricsURI:      metricsURI.String(),
 		asyncMetricsURI: asyncMetricsURI.String(),
 		eventsURI:       eventsURI.String(),
@@ -97,6 +99,23 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (e *Exporter) collect(ch chan<- prometheus.Metric) error {
+	// add up metric
+	upMetric := prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "up",
+		Help:      "Whether the Clickhouse server is up.",
+	})
+
+	_, err := e.handleResponse(e.healthURI)
+	if err != nil {
+		upMetric.Set(0)
+		upMetric.Collect(ch)
+		return fmt.Errorf("Error scraping clickhouse url %v: %v", e.healthURI, err)
+	}
+
+	upMetric.Set(1)
+	upMetric.Collect(ch)
+
 	metrics, err := e.parseKeyValueResponse(e.metricsURI)
 	if err != nil {
 		return fmt.Errorf("Error scraping clickhouse url %v: %v", e.metricsURI, err)
@@ -197,7 +216,7 @@ func (e *Exporter) handleResponse(uri string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("Status %s (%d): %s", resp.Status, resp.StatusCode, data)
 	}
-	
+
 	return data, nil
 }
 
